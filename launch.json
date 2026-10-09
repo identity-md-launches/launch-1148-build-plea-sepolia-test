@@ -1,0 +1,38 @@
+{
+  "kind": "evm_contracts",
+  "contracts": [
+    {
+      "contract": "PLEA",
+      "constructorArgs": [
+        "0x4b91078b2374c956A65F7Af0999CaE0a935E6821"
+      ]
+    },
+    {
+      "contract": "CabalGate",
+      "constructorArgs": [
+        "$contract:PLEA",
+        "0x2b69099e59b05901faa1dd164fabf098bf831e82",
+        "0x5598aa9146215bc13eb26f2c692ad1461fd32982"
+      ]
+    },
+    {
+      "contract": "PleaDistributor",
+      "constructorArgs": [
+        "$contract:PLEA",
+        "0x4b91078b2374c956A65F7Af0999CaE0a935E6821"
+      ]
+    },
+    {
+      "contract": "PleaLaunch",
+      "constructorArgs": [
+        "$contract:PLEA",
+        "$contract:CabalGate",
+        "$contract:PleaDistributor",
+        "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543",
+        "0x2b69099e59b05901faa1dd164fabf098bf831e82",
+        "0x293c7134ab8f6bf1d8ff44ed806575f8f1baf477"
+      ]
+    }
+  ],
+  "notes": "PLEA on Sepolia (chain 11155111), contracts only, deployed in constructor dependency order in one transaction with nothing called after. PLEA(owner): sell-gated ERC-20, 1e9 supply minted once in init; owner is the address the brief names, 0x4b91078b2374c956A65F7Af0999CaE0a935E6821, which also owns the gate (via plea.owner()) and the hook. CabalGate(plea, imd, oracleSigner): the sell gate; takes 0.5 TestIMD per plea, emits the oracle body, verifies EIP-712 attestations (domain IdentityMD Oracle v2, this chain, this gate) from signer 0x5598aa9146215bc13eb26f2c692ad1461fd32982 (owner-settable later), executes approved sells, appeals, dead-man killCabal after 48h. TestIMD 0x2b69099e59b05901faa1dd164fabf098bf831e82 is reused, not deployed. PleaDistributor(plea, owner): Merkle claim for the 10% share; the owner sets the root once. PleaLaunch(plea, gate, distributor, poolManager, imd, stacker): last in the launch; its constructor mines a CREATE2 salt on chain until the PleaHook address carries the hook flag bits, deploys PleaHook{salt}(poolManager, plea, imd, stacker, owner) and calls PLEA.init(hook, gate, distributor), which records them, mints 90% to the hook and 10% to the distributor and calls hook.seed() to create the PLEA/IMD v4 pool (LP fee 0) with the hook as the only LP. PleaHook is created by PleaLaunch and is deliberately not a manifest entry (the factory salt cannot hit its flag bits). Static arguments: Sepolia Uniswap v4 PoolManager 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543, reused TestIMD 0x2b69099e59b05901faa1dd164fabf098bf831e82 and reused Stacker 0x293c7134ab8f6bf1d8ff44ed806575f8f1baf477 (TestSIMD 0xf9e2eec3b610ec6781f7438ac5fb4bc049d81cc1 is reached through the Stacker and is not a constructor argument). No token, pool, reward distributor, ETH funding or initialization call: everything is wired inside the constructors."
+}
