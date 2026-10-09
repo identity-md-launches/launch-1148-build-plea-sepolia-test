@@ -81,6 +81,7 @@ contract CabalGate is OracleAttestationConsumer {
     error SlippageExceeded(uint256 out, uint256 minOut);
     error NotPoolManager();
     error CallbackNotExpected();
+    error NotRelayer();
 
     event PleaSubmitted(
         uint256 indexed id, address indexed seller, uint256 amount, uint8 factScore, uint8 need, string body
@@ -92,6 +93,7 @@ contract CabalGate is OracleAttestationConsumer {
     event PleaCancelled(uint256 indexed id);
     event CabalKilled();
     event ImdWithdrawn(address indexed to, uint256 amount);
+    event RelayerSet(address indexed relayer);
 
     uint256 public constant ORACLE_FEE = 0.5e18;
     uint256 public constant APPEAL_FEE = 0.85e18;
@@ -124,6 +126,9 @@ contract CabalGate is OracleAttestationConsumer {
     mapping(address => uint256) public pendingOf;
     mapping(address => uint256) public lastExecutedAt;
     mapping(address => uint256) public lastDeniedAt;
+    /// @notice The only address that may deliver verdicts once set (owner-set after launch). While
+    /// unset anyone may deliver, so the owner sets it before the first plea to stop verdict shopping.
+    address public relayer;
     bool private callbackExpected;
 
     constructor(address plea_, address imd_, address oracleSigner_) OracleAttestationConsumer(oracleSigner_) {
@@ -198,8 +203,7 @@ contract CabalGate is OracleAttestationConsumer {
         if (o.seller != msg.sender) revert NotSeller();
         if (o.status != Status.Denied) revert NotDenied();
         if (o.appealed || o.isAppeal) revert AlreadyAppealed();
-        if (pendingOf[msg.sender] != 0) _clearLapsed(msg.sender);
-        if (pendingOf[msg.sender] != 0) revert PendingExists();
+        _requireCanPlead(msg.sender); // one pending, 4h after an executed sell and after the denial
         _checkAmount(msg.sender, o.amount);
         _validateText(text);
         o.appealed = true;
@@ -268,8 +272,10 @@ contract CabalGate is OracleAttestationConsumer {
 
     // ------------------------------------------------------------------ verdict
 
-    /// @notice Delivers the Cabal's signed verdict for `id`. Anyone may relay it.
+    /// @notice Delivers the Cabal's signed verdict for `id`: the configured relayer, or anyone while
+    /// no relayer is set.
     function deliverVerdict(uint256 id, OracleAttestation.Attestation calldata a, bytes calldata signature) external {
+        if (relayer != address(0) && msg.sender != relayer) revert NotRelayer();
         Plea storage p = pleas[id];
         if (p.status != Status.Pending) revert NotPending();
         _verifyAttestation(a, signature);
@@ -353,6 +359,13 @@ contract CabalGate is OracleAttestationConsumer {
         _setOracleSigner(to);
     }
 
+    /// @notice Restricts `deliverVerdict` to one relayer (the one that pays the mainnet Intake), so a
+    /// seller cannot buy extra draws on the same body and deliver the first "true". Zero reopens it.
+    function setRelayer(address to) external onlyOwner {
+        relayer = to;
+        emit RelayerSet(to);
+    }
+
     /// @notice Collected oracle fees fund the relayer's mainnet Intake payments.
     function withdrawImd(address to, uint256 amount) external onlyOwner {
         imd.safeTransfer(to, amount);
@@ -364,7 +377,11 @@ contract CabalGate is OracleAttestationConsumer {
     function question(uint256 id) public view returns (string memory) {
         Plea storage p = pleas[id];
         string memory head = string.concat(
-            "You are one judge on THE CABAL, the oracle panel that decides whether a PLEA holder may sell. The seller asks to sell ",
+            "You are one judge on THE CABAL, the oracle panel that decides whether a PLEA holder may sell. Plea #",
+            Strings.toString(id),
+            " by ",
+            Strings.toHexString(p.seller),
+            ": the seller asks to sell ",
             Strings.toString(p.amount / 1e18),
             " PLEA. FACT SCORE ",
             Strings.toString(p.factScore),
@@ -466,6 +483,14 @@ contract CabalGate is OracleAttestationConsumer {
             if (i + len > n) revert BadPleaText();
             for (uint256 k = 1; k < len; ++k) {
                 if (uint8(b[i + k]) & 0xc0 != 0x80) revert BadPleaText();
+            }
+            {
+                // Unicode Table 3-7: restricted second bytes (overlongs, surrogates, above U+10FFFF)
+                uint8 s1 = uint8(b[i + 1]);
+                if (
+                    (c == 0xe0 && s1 < 0xa0) || (c == 0xed && s1 > 0x9f) || (c == 0xf0 && s1 < 0x90)
+                        || (c == 0xf4 && s1 > 0x8f)
+                ) revert BadPleaText();
             }
             if (len == 2) {
                 uint8 c1 = uint8(b[i + 1]);

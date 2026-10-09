@@ -121,8 +121,8 @@ contract GateTest is Fixture {
         vm.expectRevert(CabalGate.AmountTooLarge.selector);
         gate.submitSell(0, TEXT);
         imd.mint(alice, 10_000_000e18);
-        vm.prank(alice);
-        router.buyExactOut(20_000_000e18, abi.encode(alice));
+        buy(alice, 200e18);
+        assertGt(plea.balanceOf(alice), uint256(2_500_000e18) * 10_000 / 3_500);
         vm.prank(alice);
         vm.expectRevert(CabalGate.AmountTooLarge.selector);
         gate.submitSell(2_500_001e18, TEXT);
@@ -185,6 +185,10 @@ contract GateTest is Fixture {
         vm.prank(alice);
         vm.expectRevert();
         gate.submitSell(1e18, TEXT); // 4h wait
+        vm.prank(alice);
+        vm.expectRevert(); // the appeal waits out the same 4h as a new plea
+        gate.appeal(id, "I was too brief. Here is my whole heart: I hold, I believe, I need rent.");
+        skip(4 hours);
         uint256 retainedBefore = hook.retainedImd();
         uint256 imdBefore = imd.balanceOf(alice);
         vm.prank(alice);
@@ -207,6 +211,7 @@ contract GateTest is Fixture {
         skip(4 hours);
         id3 = _submit(alice, 1e18);
         deliver(id3, false);
+        skip(4 hours);
         vm.prank(alice);
         uint256 a3 = gate.appeal(id3, "please");
         deliver(a3, false);

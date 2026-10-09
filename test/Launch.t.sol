@@ -67,6 +67,14 @@ contract LaunchTest is Fixture {
         address at = address(uint160(bound(seed, 1 << 20, type(uint160).max)));
         vm.assume(at.code.length == 0 && at != address(pm) && at != address(imd));
         PLEA p2 = new PLEA(OWNER);
+        // about 1 in 450 (deployer, initcode) pairs has no flagged salt in 100,000 tries: skip those
+        bytes32 h = keccak256(
+            abi.encodePacked(
+                type(PleaHook).creationCode, abi.encode(address(pm), address(p2), address(imd), address(stacker), OWNER)
+            )
+        );
+        (bool minable,) = address(launch).staticcall(abi.encodeCall(launch.mine, (at, h, FLAGS)));
+        vm.assume(minable);
         deployCodeTo(
             "PleaLaunch.sol:PleaLaunch",
             abi.encode(address(p2), address(gate), address(distributor), address(pm), address(imd), address(stacker)),

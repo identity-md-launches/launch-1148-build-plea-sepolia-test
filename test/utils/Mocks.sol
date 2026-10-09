@@ -84,12 +84,19 @@ contract BuyRouter {
         plea = plea_;
     }
 
+    /// @return pleaOut PLEA the payer ended up with (the hook delivers it as ERC-20; the swapper's own
+    /// PLEA delta is zero while the Cabal lives).
     function buyExactIn(uint256 imdIn, bytes memory hookData) external returns (uint256 pleaOut) {
-        return abi.decode(pm.unlock(abi.encode(msg.sender, true, -int256(imdIn), hookData)), (uint256));
+        uint256 before = plea.balanceOf(msg.sender);
+        pm.unlock(abi.encode(msg.sender, true, -int256(imdIn), hookData));
+        return plea.balanceOf(msg.sender) - before;
     }
 
+    /// @return imdIn IMD the payer spent (gross, fees included).
     function buyExactOut(uint256 pleaWanted, bytes memory hookData) external returns (uint256 imdIn) {
-        return abi.decode(pm.unlock(abi.encode(msg.sender, true, int256(pleaWanted), hookData)), (uint256));
+        uint256 before = imd.balanceOf(msg.sender);
+        pm.unlock(abi.encode(msg.sender, true, int256(pleaWanted), hookData));
+        return before - imd.balanceOf(msg.sender);
     }
 
     function sellExactIn(uint256 pleaIn, bytes memory hookData) external returns (uint256 imdOut) {

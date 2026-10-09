@@ -82,6 +82,16 @@ contract Fixture is Test {
         out = router.buyExactIn(imdIn, abi.encode(who));
     }
 
+    /// @dev IMD that reaches the pool for an exact-input buy of `imdIn` now: the fee is a share of the fill.
+    function fillOf(uint256 imdIn) internal view returns (uint256) {
+        uint256 r = 125 + hook.launchExtraBps();
+        return imdIn - imdIn * r / (10_000 + r);
+    }
+
+    function cashbackFor(uint256 imdIn) internal view returns (uint256) {
+        return fillOf(imdIn) * 50 / 10_000;
+    }
+
     function nextBlock() internal {
         vm.roll(vm.getBlockNumber() + 1);
         skip(12);

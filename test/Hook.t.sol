@@ -23,34 +23,38 @@ contract HookTest is Fixture {
         afterLaunchWindow();
         uint256 imdIn = 100e18;
         uint256 ownerBefore = imd.balanceOf(OWNER);
+        uint256 fill = fillOf(imdIn);
+        uint256 fee = imdIn - fill;
         uint256 out = buy(alice, imdIn);
         assertGt(out, 0);
         assertEq(plea.balanceOf(alice), out);
-        // IMD fee 1.25% of the fill, split 0.5 / 0.5 / 0.25
-        assertEq(hook.imdOwnerClaims(), imdIn * 50 / 10_000);
-        assertEq(hook.imdCashbackClaims(), imdIn * 50 / 10_000);
-        assertEq(hook.imdRetainClaims(), imdIn * 25 / 10_000);
-        // 0.25% of the PLEA leg burned: alice got 99.75% of the pool output
-        assertEq(hook.pleaBurnClaims(), (out * 10_000 / 9_975 + 1) * 25 / 10_000, "burn fee");
+        // IMD fee 1.25% of the fill (what reached the pool), split 0.5 / 0.5 / 0.25
+        assertEq(hook.imdOwnerClaims(), fill * 50 / 10_000);
+        assertEq(hook.imdCashbackClaims(), fill * 50 / 10_000);
+        assertEq(hook.imdRetainClaims(), fee - 2 * (fill * 50 / 10_000));
+        assertApproxEqAbs(fee, fill * 125 / 10_000, 1, "fee is 1.25% of the fill");
+        // 0.25% of the PLEA leg burned: alice got the pool output minus the burn fee as ERC-20
+        uint256 burn = hook.pleaBurnClaims();
+        assertEq(burn, (out + burn) * 25 / 10_000, "burn fee");
         (uint256 spent, uint256 held) = hook.costBasis(alice);
         assertEq(spent, imdIn);
         assertEq(held, out);
         // first trade: no float yet, cashback is owed
-        assertEq(hook.cashbackOwed(alice), imdIn * 50 / 10_000);
+        assertEq(hook.cashbackOwed(alice), fill * 50 / 10_000);
         // next block: settle realises claims, owner paid, float funded, PLEA burned
         nextBlock();
         uint256 supplyBefore = plea.totalSupply();
         hook.settleClaims();
-        assertEq(imd.balanceOf(OWNER) - ownerBefore, imdIn * 50 / 10_000);
-        assertEq(hook.cashbackFloat(), imdIn * 50 / 10_000);
-        assertEq(hook.retainedImd(), imdIn * 25 / 10_000 - hook.KEEPER_TIP()); // settle tip paid
+        assertEq(imd.balanceOf(OWNER) - ownerBefore, fill * 50 / 10_000);
+        assertEq(hook.cashbackFloat(), fill * 50 / 10_000);
+        assertEq(hook.retainedImd(), fee - 2 * (fill * 50 / 10_000) - hook.KEEPER_TIP()); // settle tip paid
         assertLt(plea.totalSupply(), supplyBefore);
         assertEq(hook.pleaBurnClaims(), 0);
         // owed cashback is now claimable, as sIMD
         vm.prank(alice);
         hook.claimCashback();
-        assertEq(simd.balanceOf(alice), imdIn * 50 / 10_000);
-        assertEq(simd.byProject(alice, address(hook)), imdIn * 50 / 10_000);
+        assertEq(simd.balanceOf(alice), fill * 50 / 10_000);
+        assertEq(simd.byProject(alice, address(hook)), fill * 50 / 10_000);
     }
 
     function test_cashbackStackedAtTradeTimeOnceFloatExists() public {
@@ -60,8 +64,8 @@ contract HookTest is Fixture {
         hook.settleClaims();
         uint256 before = simd.balanceOf(bob);
         buy(bob, 50e18);
-        assertEq(simd.balanceOf(bob) - before, 50e18 * 50 / 10_000);
-        assertEq(simd.byProject(bob, address(hook)), 50e18 * 50 / 10_000);
+        assertEq(simd.balanceOf(bob) - before, cashbackFor(50e18));
+        assertEq(simd.byProject(bob, address(hook)), cashbackFor(50e18));
         assertEq(hook.cashbackOwed(bob), 0);
     }
 
@@ -74,7 +78,7 @@ contract HookTest is Fixture {
         uint256 imdBefore = imd.balanceOf(bob);
         uint256 out = buy(bob, 50e18);
         assertGt(out, 0, "trade still succeeds");
-        assertEq(imd.balanceOf(bob), imdBefore - 50e18 + 50e18 * 50 / 10_000, "plain IMD cashback");
+        assertEq(imd.balanceOf(bob), imdBefore - 50e18 + cashbackFor(50e18), "plain IMD cashback");
         assertEq(simd.balanceOf(bob), 0);
     }
 
@@ -87,7 +91,7 @@ contract HookTest is Fixture {
         uint256 imdBefore = imd.balanceOf(bob);
         uint256 out = buy(bob, 50e18);
         assertGt(out, 0, "trade still succeeds with RESERVE left for the fallback");
-        assertEq(imd.balanceOf(bob), imdBefore - 50e18 + 50e18 * 50 / 10_000);
+        assertEq(imd.balanceOf(bob), imdBefore - 50e18 + cashbackFor(50e18));
     }
 
     function test_cashbackOwedWhenPlainTransferImpossible() public {
@@ -102,7 +106,7 @@ contract HookTest is Fixture {
         imd.transfer(address(0xdead), hookBal);
         uint256 out = buy(bob, 50e18);
         assertGt(out, 0);
-        assertEq(hook.cashbackOwed(bob), 50e18 * 50 / 10_000);
+        assertEq(hook.cashbackOwed(bob), cashbackFor(50e18));
     }
 
     function test_launchFeeDecaysLinearlyAndGoesToPool() public {
@@ -110,8 +114,11 @@ contract HookTest is Fixture {
         skip(45 minutes);
         assertEq(hook.launchExtraBps(), 3_500);
         uint256 imdIn = 10e18;
+        uint256 fill = fillOf(imdIn);
         buy(alice, imdIn);
-        assertEq(hook.imdRetainClaims(), imdIn * (25 + 3_500) / 10_000);
+        // the extra fee is charged on the fill: fee / fill == 1.25% + 35%
+        assertEq(hook.imdRetainClaims(), (imdIn - fill) - 2 * (fill * 50 / 10_000));
+        assertApproxEqAbs(imdIn - fill, fill * 3_625 / 10_000, 1);
         skip(45 minutes);
         assertEq(hook.launchExtraBps(), 0);
     }
@@ -120,12 +127,39 @@ contract HookTest is Fixture {
         imd.mint(alice, 1_000_000e18);
         vm.prank(alice);
         vm.expectRevert();
-        router.buyExactOut(5_000_001e18, abi.encode(alice));
-        vm.prank(alice);
-        router.buyExactOut(4_000_000e18, abi.encode(alice));
+        router.buyExactIn(1_000e18, abi.encode(alice)); // far more than 5,000,000 PLEA at the seed price
+        uint256 got = buy(alice, 10e18);
+        assertLe(got, 5_000_000e18);
         afterLaunchWindow();
+        uint256 big = buy(alice, 1_000e18);
+        assertGt(big, 5_000_000e18);
+    }
+
+    function test_exactOutputBuysRefusedWhileCabalLivesAndCostTheSameAfter() public {
+        afterLaunchWindow();
+        // alive: an exact-output buy would leave the swapper a positive PLEA delta (claims), so it is refused
         vm.prank(alice);
-        router.buyExactOut(5_000_001e18, abi.encode(alice));
+        vm.expectRevert();
+        router.buyExactOut(1_000_000e18, abi.encode(alice));
+        // dead: both ways of buying the same PLEA cost the same within tick rounding
+        skip(48 hours + 1);
+        nextBlock();
+        gate.killCabal();
+        uint256 snap = vm.snapshotState();
+        vm.prank(bob);
+        uint256 costOut = router.buyExactOut(1_000_000e18, abi.encode(bob));
+        assertEq(plea.balanceOf(bob), 1_000_000e18);
+        vm.revertToState(snap);
+        uint256 lo = 1e18;
+        uint256 hi = 100e18;
+        for (uint256 i; i < 40; ++i) {
+            uint256 mid = (lo + hi) / 2;
+            vm.revertToState(snap);
+            uint256 g = buy(alice, mid);
+            if (g < 1_000_000e18) lo = mid;
+            else hi = mid;
+        }
+        assertApproxEqRel(hi, costOut, 2e16, "same fill, same cost either way");
     }
 
     function test_sellsOnlyViaGateWhileCabalLives() public {
