@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PLEA — test site (plea-test)</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  nav button { margin-right: .5rem; } section { display: none; margin-top: 1rem; } section.on { display: block; }
+  input, textarea { width: 100%; box-sizing: border-box; margin: .25rem 0 .75rem; padding: .4rem; }
+  pre { background: #f4f4f4; padding: .75rem; overflow: auto; } small { color: #666; }
+</style>
+</head>
+<body>
+<h1>PLEA <small>Sepolia test · IPFS label <code>plea-test</code></small></h1>
+<p>Addresses come from the deployment handoff; paste them below. Nothing here invents an address.</p>
+<label>PLEA <input id="plea" placeholder="0x…" /></label>
+<label>CabalGate <input id="gate" placeholder="0x…" /></label>
+<label>PleaHook <input id="hook" placeholder="0x…" /></label>
+<label>TestIMD <input id="imd" value="0x2b69099e59b05901faa1dd164fabf098bf831e82" /></label>
+<button id="connect">Connect wallet</button> <span id="who"></span>
+<nav><button data-t="buy">Buy</button><button data-t="plead">Plead</button><button data-t="wall">Wall</button></nav>
+
+<section id="buy" class="on">
+  <h2>Buy</h2>
+  <p>Buys go through any Uniswap v4 router against the PLEA/IMD pool (hook = PleaHook, fee 0, tick spacing 60). This test page shows the pool state; use the Universal Router or the test <code>BuyRouter</code> to trade.</p>
+  <pre id="buyState">connect to read</pre>
+</section>
+
+<section id="plead">
+  <h2>Plead</h2>
+  <p>Approve 0.5 TestIMD and the PLEA amount to the gate, then submit. 1–280 bytes, no control or zero-width characters, no "[PLEA".</p>
+  <label>Amount (PLEA) <input id="amount" placeholder="1000" /></label>
+  <label>Your plea <textarea id="text" rows="4" maxlength="280"></textarea></label>
+  <button id="submit">submitSell</button> <button id="execute">executeSell (7-minute window)</button>
+  <pre id="pleaState">connect to read</pre>
+</section>
+
+<section id="wall">
+  <h2>Wall</h2>
+  <p>Retained IMD and the live buy wall. Anyone may call <code>rebalance()</code> or <code>settleClaims()</code> for a tip.</p>
+  <button id="rebalance">rebalance()</button> <button id="settle">settleClaims()</button>
+  <pre id="wallState">connect to read</pre>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("section").forEach((s) => s.classList.remove("on"));
+  $(b.dataset.t).classList.add("on");
+});
+const sel = (sig) => keccak(sig).slice(0, 10);
+// minimal keccak-256 (for selectors) — tiny-keccak port
+function keccak(str) {
+  const RC = [1n,32898n,0x800000000000808an,0x8000000080008000n,32907n,0x80000001n,0x8000000080008081n,0x8000000000008009n,138n,136n,0x80008009n,0x8000000an,0x8000808bn,0x800000000000008bn,0x8000000000008089n,0x8000000000008003n,0x8000000000008002n,0x8000000000000080n,0x800an,0x800000008000000an,0x8000000080008081n,0x8000000000008080n,0x80000001n,0x8000000080008008n];
+  const R = [1,3,6,10,15,21,28,36,45,55,2,14,27,41,56,8,25,43,62,18,39,61,20,44];
+  const P = [10,7,11,17,18,3,5,16,8,21,24,4,15,23,19,13,12,2,20,14,22,9,6,1];
+  const rot = (x, n) => ((x << BigInt(n)) | (x >> BigInt(64 - n))) & 0xffffffffffffffffn;
+  const bytes = new TextEncoder().encode(str); const rate = 136;
+  const padded = new Uint8Array(Math.ceil((bytes.length + 1) / rate) * rate); padded.set(bytes); padded[bytes.length] ^= 1; padded[padded.length - 1] ^= 0x80;
+  const s = new Array(25).fill(0n);
+  for (let off = 0; off < padded.length; off += rate) {
+    for (let i = 0; i < rate / 8; i++) { let v = 0n; for (let j = 7; j >= 0; j--) v = (v << 8n) | BigInt(padded[off + i * 8 + j]); s[i] ^= v; }
+    for (let r = 0; r < 24; r++) {
+      const c = []; for (let x = 0; x < 5; x++) c[x] = s[x] ^ s[x+5] ^ s[x+10] ^ s[x+15] ^ s[x+20];
+      for (let x = 0; x < 5; x++) { const d = c[(x+4)%5] ^ rot(c[(x+1)%5], 1); for (let y = 0; y < 25; y += 5) s[x+y] ^= d; }
+      let cur = s[1]; for (let i = 0; i < 24; i++) { const j = P[i]; const t = s[j]; s[j] = rot(cur, R[i]); cur = t; }
+      for (let y = 0; y < 25; y += 5) { const t = s.slice(y, y+5); for (let x = 0; x < 5; x++) s[y+x] = t[x] ^ ((~t[(x+1)%5]) & t[(x+2)%5] & 0xffffffffffffffffn); }
+      s[0] ^= RC[r];
+    }
+  }
+  let out = "0x"; for (let i = 0; i < 4; i++) { let v = s[i]; for (let j = 0; j < 8; j++) { out += (v & 0xffn).toString(16).padStart(2, "0"); v >>= 8n; } }
+  return out;
+}
+const pad = (h) => h.replace(/^0x/, "").padStart(64, "0");
+const enc = (sig, ...words) => sel(sig) + words.map(pad).join("");
+let me;
+async function call(to, data) { return ethereum.request({ method: "eth_call", params: [{ to, data }, "latest"] }); }
+async function send(to, data) { return ethereum.request({ method: "eth_sendTransaction", params: [{ from: me, to, data }] }); }
+const num = (h) => BigInt(h || "0x0");
+const fmt = (x) => (Number(x) / 1e18).toLocaleString();
+async function refresh() {
+  try {
+    const hook = $("hook").value, gate = $("gate").value, plea = $("plea").value;
+    const price = num(await call(hook, enc("priceX96()")));
+    const cap = num(await call(hook, enc("inventoryCap()")));
+    const held = num(await call(hook, enc("pleaInMarket()")));
+    const extra = num(await call(hook, enc("launchExtraBps()")));
+    $("buyState").textContent = `IMD per PLEA: ${(Number(price) / 2 ** 96).toExponential(4)}\nmarket cap (IMD): ${(Number(price) / 2 ** 96 * 1e9).toFixed(2)}\nPLEA in market: ${fmt(held)}\ninventory cap: ${fmt(cap)}\nlaunch extra fee: ${Number(extra) / 100}%`;
+    const bal = num(await call(plea, enc("balanceOf(address)", me)));
+    const pending = num(await call(gate, enc("pendingOf(address)", me)));
+    const dead = num(await call(plea, enc("cabalDead()")));
+    $("pleaState").textContent = `your PLEA: ${fmt(bal)}\npending plea id: ${pending}\ncabal dead: ${dead !== 0n}`;
+    const retained = num(await call(hook, enc("retainedImd()")));
+    const inWall = num(await call(hook, enc("pleaInWall()")));
+    const pend = num(await call(hook, enc("pendingRebalance()")));
+    $("wallState").textContent = `retained IMD: ${fmt(retained)}\nPLEA bought by the wall: ${fmt(inWall)}\nrebalance pending: ${pend !== 0n}`;
+  } catch (e) { console.error(e); }
+}
+$("connect").onclick = async () => { [me] = await ethereum.request({ method: "eth_requestAccounts" }); $("who").textContent = me; refresh(); };
+$("submit").onclick = async () => {
+  const gate = $("gate").value, text = $("text").value, amount = BigInt(Math.round(Number($("amount").value) * 1e18));
+  await send($("imd").value, enc("approve(address,uint256)", gate, "0x" + (5n * 10n ** 17n).toString(16)));
+  await send($("plea").value, enc("approve(address,uint256)", gate, "0x" + amount.toString(16)));
+  const t = new TextEncoder().encode(text); const hex = [...t].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const data = sel("submitSell(uint256,string)") + pad("0x" + amount.toString(16)) + pad("0x40") + pad("0x" + t.length.toString(16)) + hex.padEnd(Math.ceil(hex.length / 64) * 64, "0");
+  await send(gate, data); refresh();
+};
+$("execute").onclick = async () => { await send($("gate").value, enc("executeSell(uint256)", "0x0")); refresh(); };
+$("rebalance").onclick = async () => { await send($("hook").value, enc("rebalance()")); refresh(); };
+$("settle").onclick = async () => { await send($("hook").value, enc("settleClaims()")); refresh(); };
+</script>
+</body>
+</html>
