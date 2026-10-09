@@ -1,0 +1,69 @@
+- generic [ref=f2e2]:
+  - link "Skip to content" [ref=f2e3] [cursor=pointer]:
+    - /url: "#main"
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - link "PLEA, home" [ref=f2e6] [cursor=pointer]:
+        - /url: "#/buy"
+        - text: PLEA Sepolia test
+      - navigation "Pages" [ref=f2e7]:
+        - list [ref=f2e8]:
+          - listitem [ref=f2e9]:
+            - link "Buy" [ref=f2e10] [cursor=pointer]:
+              - /url: "#/buy"
+          - listitem [ref=f2e11]:
+            - link "Cashback" [ref=f2e12] [cursor=pointer]:
+              - /url: "#/cashback"
+          - listitem [ref=f2e13]:
+            - link "Plead" [ref=f2e14] [cursor=pointer]:
+              - /url: "#/plead"
+          - listitem [ref=f2e15]:
+            - link "Wall" [ref=f2e16] [cursor=pointer]:
+              - /url: "#/wall"
+          - listitem [ref=f2e17]:
+            - link "Status" [ref=f2e18] [cursor=pointer]:
+              - /url: "#/status"
+      - generic [ref=f2e19]:
+        - button "Connect wallet" [disabled] [ref=f2e20]
+        - button "Switch to dark theme" [ref=f2e25] [cursor=pointer]
+  - main [ref=f2e28]:
+    - heading "Buy PLEA" [level=1] [ref=f2e29]
+    - paragraph [ref=f2e30]: Spend test IMD for PLEA through the Uniswap v4 pool. Buys are exact-input, the hook takes a 1.25% fee on the tIMD side, burns 0.25% of the PLEA and delivers the rest straight to your wallet.
+    - generic [ref=f2e31]: No wallet found. Install a browser wallet such as MetaMask, then reload this page to buy.
+    - region [ref=f2e32]:
+      - heading "Get test IMD" [level=2] [ref=f2e33]
+      - paragraph [ref=f2e34]: The faucet on the TestIMD token gives tIMD to any caller on Sepolia. You also need a little Sepolia ETH for gas.
+      - generic [ref=f2e35]:
+        - button "Connect wallet" [ref=f2e36] [cursor=pointer]
+        - generic [ref=f2e38]: "Balance: — tIMD · — PLEA"
+      - status [ref=f2e39]
+    - region [ref=f2e40]:
+      - heading "Buy PLEA with tIMD" [level=2] [ref=f2e41]
+      - generic [ref=f2e42]:
+        - generic [ref=f2e43]:
+          - generic [ref=f2e44]: tIMD to spend
+          - generic [ref=f2e46]:
+            - textbox "tIMD to spend" [ref=f2e47]:
+              - /placeholder: "1.0"
+            - generic [ref=f2e48]: tIMD
+          - paragraph [ref=f2e49]: "Exact input: you set the tIMD, the pool decides the PLEA."
+        - paragraph [ref=f2e51]: Enter an amount to preview the PLEA you receive.
+        - button "Connect wallet" [ref=f2e53] [cursor=pointer]
+        - status [ref=f2e55]
+        - status [ref=f2e56]
+      - paragraph [ref=f2e57]:
+        - text: "Router: Uniswap PoolSwapTest"
+        - link "0x9B6b…6eEe (opens Etherscan)" [ref=f2e58] [cursor=pointer]:
+          - /url: https://sepolia.etherscan.io/address/0x9b6b46e2c869aa39918db7f52f5557fe577b6eee
+          - text: 0x9B6b…6eEe
+          - generic [ref=f2e63]: (opens Etherscan)
+        - text: · exact input, price limit MIN_SQRT_PRICE + 1, hookData = your address.
+    - region [ref=f2e64]:
+      - heading "Your cost basis" [level=2] [ref=f2e65]
+      - paragraph [ref=f2e66]: Connect a wallet to see what you paid for your PLEA.
+  - contentinfo [ref=f2e67]:
+    - paragraph [ref=f2e68]:
+      - text: "PLEA test site for launch #1148 on Sepolia · pinned on IPFS under the label plea-test · reads public Sepolia RPCs ·"
+      - link "all contract addresses" [ref=f2e69] [cursor=pointer]:
+        - /url: "#/status"
+      - text: .

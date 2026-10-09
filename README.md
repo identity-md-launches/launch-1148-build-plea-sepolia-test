@@ -83,4 +83,30 @@ forge test
 forge fmt --check
 ```
 
-`forge test -vv --match-test test_reportLaunchAndMiningGas` prints the PleaLaunch constructor gas and the salt-mining gas. `test/Hook.t.sol` sizes `RESERVE` against a credit that swallows all gas. Site: `site/index.html` (Buy, Plead, Wall), to be pinned under the IPFS label `plea-test` with the handoff addresses.
+`forge test -vv --match-test test_reportLaunchAndMiningGas` prints the PleaLaunch constructor gas and the salt-mining gas. `test/Hook.t.sol` sizes `RESERVE` against a credit that swallows all gas.
+
+## Test site (`web/` → `dist/`)
+
+A static Vite + React + TypeScript site against the live Sepolia launch (#1148): Buy (tIMD faucet, exact-input buy through Uniswap's PoolSwapTest with `hookData = abi.encode(buyer)`, preview via `eth_simulateV1` of the same swap, launch fee, per-buy cap, cost basis), Cashback (`cashbackOwed`, `cashbackFloat`, settle, claim, tsIMD earned), Plead (amount and text checks, live fact score, approve 0.5 tIMD, `submitSell`, then Pending/Approved/Denied/Lapsed/Executed handling with `executeSell(minOut)`, `cancel`, `appeal`), Wall (every plea from the gate's logs since block 11877100, stamped, with permalinks) and Status (Cabal, dead-man countdown, price, market, wall, `rebalance()`, all addresses). Design notes are in `DESIGN.md`; the validation record is in `artifacts/validation.md`.
+
+Addresses and chain facts are in `web/src/lib/config.ts`. ABIs are generated from the Foundry build of this commit:
+
+```
+forge build --skip test --skip script
+cd web && node scripts/gen-abi.mjs     # also compares keccak(sorted-key JSON) with deployment abiHash values
+```
+
+Install, preview, typecheck and rebuild (Node 24, npm 11):
+
+```
+cd web
+npm ci                 # dependencies from package-lock.json
+npm run dev            # local dev server
+npm run typecheck      # tsc --noEmit
+npm run build          # writes ../dist with relative asset URLs (base "./")
+npm run preview        # serves the built export
+```
+
+The committed `dist/` is the production export; the publisher serves it as is. To publish on IPFS under the label `plea-test`, pin the `dist/` directory (for example `ipfs add -r dist` or a pinning service) and publish the resulting CID under that label; the site uses hash routing, so it works from any gateway subpath or an ENS name. `node_modules` is not committed; run `npm ci` before building. The earlier placeholder page under `site/` was replaced by this site.
+
+Validation performed for this site: typecheck and production build; faucet, approve, buy, settle, claim and `submitSell` up to Pending on an anvil fork of Sepolia with the site's own ABIs and call builders; browser inspection of the export against the live contracts at 360 and 1280 px in light and dark. Real wallet transactions on live Sepolia and the IPFS pin were not performed in the build environment (no funded key, no pinning credentials); see `artifacts/validation.md`.
