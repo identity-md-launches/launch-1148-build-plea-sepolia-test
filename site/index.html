@@ -23,7 +23,7 @@
 
 <section id="buy" class="on">
   <h2>Buy</h2>
-  <p>Buys go through any Uniswap v4 router against the PLEA/IMD pool (hook = PleaHook, fee 0, tick spacing 60). This test page shows the pool state; use the Universal Router or the test <code>BuyRouter</code> to trade.</p>
+  <p>Buys go through any Uniswap v4 router against the PLEA/IMD pool (hook = PleaHook, fee 0, tick spacing 60). While the Cabal lives a buy must be exact-input and pass <code>hookData = abi.encode(recipient)</code> (your wallet): the hook delivers the PLEA straight to that address and refuses a buy without it (<code>RecipientRequired</code>). This test page shows the pool state; use a v4 router that forwards hookData or the test <code>BuyRouter</code> to trade.</p>
   <pre id="buyState">connect to read</pre>
 </section>
 

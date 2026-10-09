@@ -49,10 +49,12 @@ contract PleaHook {
     error PriceMoved();
     error InvalidLiquidity();
     error ExactOutputBuyRefused();
+    error RecipientRequired();
 
     event Seeded(uint160 sqrtPriceX96, int24 tick, uint128 liquidity, uint256 pleaDeposited);
     event SeedDeferred();
     event FeesTaken(address indexed trader, bool buy, uint256 imdBasis, uint256 imdFee, uint256 pleaFee);
+    event FeeRefunded(address indexed trader, address currency, uint256 amount, bool asClaims);
     event CashbackStacked(address indexed trader, uint256 amount);
     event CashbackPaidPlain(address indexed trader, uint256 amount);
     event CashbackOwed(address indexed trader, uint256 amount);
@@ -399,7 +401,15 @@ contract PleaHook {
         // buys have their whole PLEA output taken by the hook and delivered as ERC-20 in afterSwap; an
         // exact-output buy fixes the swapper's PLEA delta at the requested amount, so it is refused.
         if (buy && !exactIn && alive) revert ExactOutputBuyRefused();
-        address trader = hookData.length == 32 ? abi.decode(hookData, (address)) : sender;
+        // The recipient comes from hookData (abi.encode(address)); otherwise it is the swap sender.
+        // A live-Cabal buy delivers ERC-20 PLEA to the recipient, so it must be given explicitly:
+        // delivered to a router it could never leave (PLEA refuses `from == router`).
+        address trader;
+        if (hookData.length == 32) trader = abi.decode(hookData, (address));
+        if (trader == address(0)) {
+            if (buy && alive) revert RecipientRequired();
+            trader = sender;
+        }
         uint256 amount = exactIn ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
         bool specifiedIsImd = buy == exactIn;
         uint256 rate = specifiedIsImd ? _imdRate(buy) : PLEA_BURN_BPS;
@@ -452,9 +462,7 @@ contract PleaHook {
         // The specified-side fee was taken on the requested amount; charge it on the fill only.
         uint256 specDue = specAmt * (specifiedIsImd ? _imdRate(buy) : PLEA_BURN_BPS) / BPS;
         if (specDue > specFee) specDue = specFee;
-        if (specFee > specDue) {
-            poolManager.take(Currency.wrap(specifiedIsImd ? address(imd) : plea), trader, specFee - specDue);
-        }
+        if (specFee > specDue) _refund(trader, specifiedIsImd, specFee - specDue);
 
         uint256 imdBasis;
         uint256 imdFee;
@@ -467,11 +475,12 @@ contract PleaHook {
             if (buy) _checkMaxBuy(unspecAmt);
             pleaFee = unspecAmt * PLEA_BURN_BPS / BPS;
             pleaAmt = unspecAmt;
-            if (buy) {
+            if (buy && !IPLEAForHook(plea).cabalDead()) {
                 // Take the whole PLEA output; the trader receives ERC-20 PLEA from the hook's delta.
                 if (unspecAmt - pleaFee != 0) poolManager.take(Currency.wrap(plea), trader, unspecAmt - pleaFee);
                 ret = int128(int256(unspecAmt));
             } else {
+                // Sells, and buys once the Cabal is dead: plain v4 accounting, the hook takes its fee.
                 ret = int128(int256(pleaFee));
             }
         } else {
@@ -492,6 +501,24 @@ contract PleaHook {
         uint256 cashback = imdBasis * CASHBACK_BPS / BPS;
         _payCashback(trader, cashback);
         return (IHooks.afterSwap.selector, ret);
+    }
+
+    /// @dev Returns the part of the specified-side fee the fill did not earn. The swapper has not
+    /// settled yet, so the PoolManager may hold less IMD than the refund (nothing right after launch):
+    /// then the refund is minted to the trader as an ERC-6909 IMD claim instead of reverting the trade.
+    /// PLEA refunds (a gate sell) are always ERC-20: the PoolManager holds the pool's PLEA, and a PLEA
+    /// claim in a seller's hands could be sold in a hookless pool.
+    function _refund(address trader, bool isImd, uint256 amount) internal {
+        if (!isImd) {
+            poolManager.take(Currency.wrap(plea), trader, amount);
+            emit FeeRefunded(trader, plea, amount, false);
+        } else if (imd.balanceOf(address(poolManager)) >= amount) {
+            poolManager.take(Currency.wrap(address(imd)), trader, amount);
+            emit FeeRefunded(trader, address(imd), amount, false);
+        } else {
+            poolManager.mint(trader, _id(address(imd)), amount);
+            emit FeeRefunded(trader, address(imd), amount, true);
+        }
     }
 
     function _checkMaxBuy(uint256 pleaAmount) internal view {
@@ -652,18 +679,25 @@ contract PleaHook {
         if (!seeded) revert NotSeeded();
         uint256 work = _settleMatured();
         if (!pendingRebalance()) revert RebalanceNotNeeded();
-        work += abi.decode(_unlock(abi.encode(ACTION_REBALANCE, "")), (uint256));
-        _payTip(msg.sender, work);
+        (uint256 w, bool acted) = abi.decode(_unlock(abi.encode(ACTION_REBALANCE, "")), (uint256, bool));
+        // Nothing settled, no wall closed and none deployed (the band cannot be placed while the
+        // price sits at a tick extreme): the call did no work and must not be paid for it.
+        if (work == 0 && !acted) revert RebalanceNotNeeded();
+        _payTip(msg.sender, work + w);
     }
 
-    /// @return work IMD value handled: what the wall spent buying PLEA plus fresh reserve redeployed.
-    function _rebalance() internal returns (uint256 work) {
-        if (retainedImd >= WALL_THRESHOLD) work = retainedImd;
+    /// @return work IMD value actually handled: what the wall spent buying PLEA plus fresh reserve
+    /// (at least `WALL_THRESHOLD`) that was deployed in this call. Reserve that could not be deployed,
+    /// and wall IMD merely recycled into a new band, count for nothing.
+    /// @return acted Whether a wall was closed or deployed.
+    function _rebalance() internal returns (uint256 work, bool acted) {
+        uint256 fresh = retainedImd;
         uint256 deployed = wallImd;
         uint256 back = _closeWall();
+        if (deployed != 0) acted = true;
         if (deployed > back) work += deployed - back;
         uint256 amount = retainedImd > KEEPER_TIP ? retainedImd - KEEPER_TIP : 0;
-        if (amount == 0) return work;
+        if (amount == 0) return (work, acted);
         int24 spot = currentTick();
         int24 lower;
         int24 upper;
@@ -672,16 +706,16 @@ contract PleaHook {
             int24 edge = spot < refTick ? spot : refTick;
             upper = _alignDown(edge);
             lower = minTick;
-            if (upper <= lower) return work;
+            if (upper <= lower) return (work, acted);
         } else {
             // IMD is token0: the band sits above spot (tick < lower).
             int24 edge = spot > refTick ? spot : refTick;
             lower = _alignUp(edge + 1);
             upper = maxTick;
-            if (lower >= upper) return work;
+            if (lower >= upper) return (work, acted);
         }
         uint128 liquidity = _liquidityForSingleSide(lower, upper, amount, !pleaIsZero);
-        if (liquidity == 0) return work;
+        if (liquidity == 0) return (work, acted);
         uint160 priceBefore = currentSqrtPriceX96();
         (BalanceDelta d,) = poolManager.modifyLiquidity(
             poolKey(),
@@ -700,6 +734,8 @@ contract PleaHook {
         wall = Band({tickLower: lower, tickUpper: upper, liquidity: liquidity});
         wallImd = imdReq;
         if (currentSqrtPriceX96() != priceBefore) revert PriceMoved();
+        acted = true;
+        if (fresh >= WALL_THRESHOLD) work += fresh < imdReq ? fresh : imdReq;
         emit WallDeployed(lower, upper, liquidity, imdReq);
     }
 
@@ -822,7 +858,8 @@ contract PleaHook {
             return abi.encode(_redeem());
         }
         if (action == ACTION_REBALANCE) {
-            return abi.encode(_rebalance());
+            (uint256 work, bool acted) = _rebalance();
+            return abi.encode(work, acted);
         }
         revert CallbackNotExpected();
     }

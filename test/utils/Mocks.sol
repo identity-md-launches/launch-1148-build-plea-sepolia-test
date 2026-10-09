@@ -88,35 +88,47 @@ contract BuyRouter {
     /// PLEA delta is zero while the Cabal lives).
     function buyExactIn(uint256 imdIn, bytes memory hookData) external returns (uint256 pleaOut) {
         uint256 before = plea.balanceOf(msg.sender);
-        pm.unlock(abi.encode(msg.sender, true, -int256(imdIn), hookData));
+        pm.unlock(abi.encode(msg.sender, true, -int256(imdIn), hookData, uint160(0)));
+        return plea.balanceOf(msg.sender) - before;
+    }
+
+    /// @dev Exact-input buy that stops at `sqrtPriceLimitX96` (a partial fill when the limit is near spot).
+    function buyExactInLimit(uint256 imdIn, bytes memory hookData, uint160 sqrtPriceLimitX96)
+        external
+        returns (uint256 pleaOut)
+    {
+        uint256 before = plea.balanceOf(msg.sender);
+        pm.unlock(abi.encode(msg.sender, true, -int256(imdIn), hookData, sqrtPriceLimitX96));
         return plea.balanceOf(msg.sender) - before;
     }
 
     /// @return imdIn IMD the payer spent (gross, fees included).
     function buyExactOut(uint256 pleaWanted, bytes memory hookData) external returns (uint256 imdIn) {
         uint256 before = imd.balanceOf(msg.sender);
-        pm.unlock(abi.encode(msg.sender, true, int256(pleaWanted), hookData));
+        pm.unlock(abi.encode(msg.sender, true, int256(pleaWanted), hookData, uint160(0)));
         return before - imd.balanceOf(msg.sender);
     }
 
     function sellExactIn(uint256 pleaIn, bytes memory hookData) external returns (uint256 imdOut) {
-        return abi.decode(pm.unlock(abi.encode(msg.sender, false, -int256(pleaIn), hookData)), (uint256));
+        return abi.decode(pm.unlock(abi.encode(msg.sender, false, -int256(pleaIn), hookData, uint160(0))), (uint256));
+    }
+
+    /// @dev A router's sweep: moves tokens it ended up holding to `to`.
+    function forward(IERC20 token, address to) external {
+        token.transfer(to, token.balanceOf(address(this)));
     }
 
     function unlockCallback(bytes calldata raw) external returns (bytes memory) {
         require(msg.sender == address(pm), "pm");
-        (address payer, bool buy, int256 amountSpecified, bytes memory hookData) =
-            abi.decode(raw, (address, bool, int256, bytes));
+        (address payer, bool buy, int256 amountSpecified, bytes memory hookData, uint160 limit) =
+            abi.decode(raw, (address, bool, int256, bytes, uint160));
         PoolKey memory key = hook.poolKey();
         bool pleaIsZero = hook.pleaIsZero();
         bool zeroForOne = buy ? !pleaIsZero : pleaIsZero;
+        if (limit == 0) limit = zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1;
         BalanceDelta d = pm.swap(
             key,
-            SwapParams({
-                zeroForOne: zeroForOne,
-                amountSpecified: amountSpecified,
-                sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
-            }),
+            SwapParams({zeroForOne: zeroForOne, amountSpecified: amountSpecified, sqrtPriceLimitX96: limit}),
             hookData
         );
         (int128 pleaDelta, int128 imdDelta) = pleaIsZero ? (d.amount0(), d.amount1()) : (d.amount1(), d.amount0());

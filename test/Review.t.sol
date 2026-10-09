@@ -340,6 +340,171 @@ contract ReviewTest is Fixture {
         gate.submitSell(1e18, unicode"ab€😀 fine");
     }
 
+    // ---------------------------------------------------------------- round 3: recipient required (medium)
+
+    function test_exactInBuyWithoutRecipientRefusedWhileAlive() public {
+        afterLaunchWindow();
+        // no hookData: the PLEA would land in the router, where the Cabal strands it
+        vm.prank(bob);
+        vm.expectRevert();
+        router.buyExactIn(10e18, "");
+        // 32 bytes that decode to the zero address are refused too
+        vm.prank(bob);
+        vm.expectRevert();
+        router.buyExactIn(10e18, abi.encode(address(0)));
+        // 32 bytes that are not a clean address are refused by the decoder
+        vm.prank(bob);
+        vm.expectRevert();
+        router.buyExactIn(10e18, abi.encode(uint256(1) << 200));
+        assertEq(plea.balanceOf(bob), 0);
+        assertEq(plea.balanceOf(address(router)), 0);
+        assertEq(imd.balanceOf(bob), 10_000e18, "a refused buy costs nothing");
+        (uint256 spent,) = hook.costBasis(address(router));
+        assertEq(spent, 0, "nothing booked for the router");
+        // the documented form works
+        assertGt(buy(bob, 10e18), 0);
+        assertEq(plea.balanceOf(address(router)), 0);
+    }
+
+    function test_afterKillCabalPlainRouterBuyReachesBuyer() public {
+        skip(49 hours);
+        vm.roll(vm.getBlockNumber() + 14_700);
+        gate.killCabal();
+        assertTrue(plea.cabalDead());
+        // standard v4 accounting: the swapper gets a positive PLEA delta and its router takes it to bob
+        vm.prank(bob);
+        uint256 out = router.buyExactIn(10e18, "");
+        assertGt(out, 0);
+        assertEq(plea.balanceOf(bob), out);
+        assertEq(plea.balanceOf(address(router)), 0, "nothing stranded in the router");
+        assertEq(plea.balanceOf(address(hook)), 0);
+        (uint256 spent, uint256 held) = hook.costBasis(address(router));
+        assertEq(held, out, "basis is booked for the swap sender when no recipient is given");
+        assertGt(spent, 0);
+        // the 0.25% burn fee was still taken on the PLEA leg (out = gross - gross * 25 / 10000)
+        assertApproxEqAbs(hook.pleaBurnClaims(), out * 25 / 9_975, 1);
+    }
+
+    // ---------------------------------------------------------------- round 3: tip only for work done (medium)
+
+    function _drainMarketWithGateSell() internal {
+        buy(bob, 10e18);
+        _claim(alice, 100_000_000e18);
+        skip(1 days);
+        vm.roll(vm.getBlockNumber() + 7200);
+        vm.prank(alice);
+        uint256 id = gate.submitSell(2_500_000e18, TEXT);
+        deliver(id, true);
+        vm.prank(alice);
+        uint256 out = gate.executeSell(0);
+        assertGt(out, 0);
+        assertEq(hook.imdInMarket(), 0, "every IMD position is exhausted");
+        int24 tick = hook.currentTick();
+        assertTrue(tick == TickMath.MAX_TICK - 1 || tick == TickMath.MIN_TICK, "price at the tick extreme");
+    }
+
+    function test_noTipWhileWallCannotDeploy() public {
+        afterLaunchWindow();
+        _drainMarketWithGateSell();
+        imd.mint(address(this), 20e18);
+        imd.approve(address(hook), 20e18);
+        hook.fundWall(20e18);
+        assertTrue(hook.pendingRebalance());
+        nextBlock();
+        // the first call settles the matured fee claims of the buy and the sell: real work, one tip
+        vm.prank(keeper);
+        hook.rebalance();
+        assertEq(imd.balanceOf(keeper), hook.KEEPER_TIP());
+        (,, uint128 liq) = hook.wall();
+        assertEq(liq, 0, "the band cannot be placed at the extreme");
+        uint256 reserve = hook.retainedImd();
+        // from then on nothing is settled, closed or deployed: no tip, and the call says so
+        for (uint256 i; i < 10; ++i) {
+            nextBlock();
+            vm.prank(keeper);
+            vm.expectRevert(PleaHook.RebalanceNotNeeded.selector);
+            hook.rebalance();
+        }
+        assertEq(imd.balanceOf(keeper), hook.KEEPER_TIP(), "no tip for doing nothing");
+        assertEq(hook.retainedImd(), reserve, "the reserve is not farmed");
+        // the next buy brings the price back and the wall deploys (and that call is tipped)
+        nextBlock();
+        buy(bob, 1e18);
+        nextBlock();
+        vm.prank(keeper);
+        hook.rebalance();
+        (,, liq) = hook.wall();
+        assertGt(liq, 0);
+        assertEq(imd.balanceOf(keeper), 2 * hook.KEEPER_TIP());
+        assertLt(hook.retainedImd(), 1e18, "the reserve went into the wall");
+    }
+
+    function test_recycledWallEarnsNoTip() public {
+        afterLaunchWindow();
+        buy(alice, 100e18);
+        imd.mint(address(this), 50e18);
+        imd.approve(address(hook), 50e18);
+        hook.fundWall(50e18);
+        nextBlock();
+        vm.prank(keeper);
+        hook.rebalance();
+        assertEq(imd.balanceOf(keeper), hook.KEEPER_TIP());
+        // an untouched wall is not pending; nothing to settle either
+        nextBlock();
+        assertFalse(hook.pendingRebalance());
+        vm.prank(keeper);
+        vm.expectRevert(PleaHook.RebalanceNotNeeded.selector);
+        hook.rebalance();
+        assertEq(imd.balanceOf(keeper), hook.KEEPER_TIP());
+    }
+
+    // ---------------------------------------------------------------- round 3: partial-fill refund (low)
+
+    function _limitNearSpot() internal view returns (uint160) {
+        int24 spot = hook.currentTick();
+        return TickMath.getSqrtPriceAtTick(hook.pleaIsZero() ? spot + 120 : spot - 120);
+    }
+
+    function _imdFeeFromLogs(Vm.Log[] memory logs) internal pure returns (uint256 basis, uint256 fee) {
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == PleaHook.FeesTaken.selector) {
+                (, basis, fee,) = abi.decode(logs[i].data, (bool, uint256, uint256, uint256));
+            }
+        }
+    }
+
+    function test_partialFillExactInBuyRefundsWhenPoolManagerHoldsNoImd() public {
+        afterLaunchWindow();
+        assertEq(imd.balanceOf(address(pm)), 0);
+        uint256 imdId = uint256(uint160(address(imd)));
+        uint256 before = imd.balanceOf(bob);
+        uint160 limit = _limitNearSpot();
+        vm.recordLogs();
+        vm.prank(bob);
+        uint256 out = router.buyExactInLimit(1_000e18, abi.encode(bob), limit);
+        assertGt(out, 0);
+        (uint256 basis, uint256 fee) = _imdFeeFromLogs(vm.getRecordedLogs());
+        assertLt(basis, 100e18, "a partial fill");
+        assertEq(fee, basis * 125 / 10_000, "fee on the fill only");
+        uint256 specFee = uint256(1_000e18) * 125 / 10_125;
+        uint256 refund = specFee - fee;
+        // the PoolManager held no IMD to refund from: the refund is an IMD claim the trader owns
+        assertEq(before - imd.balanceOf(bob), basis + specFee);
+        assertEq(pm.balanceOf(bob, imdId), refund);
+        assertGt(refund, 10e18);
+        // once the PoolManager holds IMD the refund is paid in ERC-20
+        nextBlock();
+        before = imd.balanceOf(bob);
+        limit = _limitNearSpot();
+        vm.recordLogs();
+        vm.prank(bob);
+        out = router.buyExactInLimit(1_000e18, abi.encode(bob), limit);
+        assertGt(out, 0);
+        (basis, fee) = _imdFeeFromLogs(vm.getRecordedLogs());
+        assertEq(before - imd.balanceOf(bob), basis + fee, "fill plus 1.25% of the fill");
+        assertEq(pm.balanceOf(bob, imdId), refund, "no new claims");
+    }
+
     // ---------------------------------------------------------------- in-swap redemption (low)
 
     function test_nextBlockTradeRedeemsMaturedClaimsEvenWithDustAhead() public {
