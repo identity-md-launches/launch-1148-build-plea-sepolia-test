@@ -5,8 +5,20 @@ import {Fixture} from "./utils/Fixture.sol";
 import {PLEA} from "../src/PLEA.sol";
 import {PleaLaunch} from "../src/PleaLaunch.sol";
 import {PleaHook} from "../src/PleaHook.sol";
+import {CabalGate} from "../src/CabalGate.sol";
+import {PleaDistributor} from "../src/PleaDistributor.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
+
+/// @dev Performs the PleaLaunch deployment inside one call so a gas limit can bound it.
+contract LaunchDeployer {
+    function deploy(address plea, address gate, address distributor, address pm, address imd, address stacker)
+        external
+        returns (PleaLaunch l)
+    {
+        l = new PleaLaunch(plea, gate, distributor, pm, imd, stacker);
+    }
+}
 
 contract LaunchTest is Fixture {
     uint160 constant FLAGS = (1 << 13) | (1 << 11) | (1 << 7) | (1 << 6) | (1 << 3) | (1 << 2);
@@ -34,6 +46,10 @@ contract LaunchTest is Fixture {
         Hooks.validateHookPermissions(IHooks(address(hook)), hook.getHookPermissions());
     }
 
+    /// @dev In this forge build `gasleft()` around `new X(...)` reports only the CREATE call overhead
+    /// (about 24k), not the constructor's execution, and so does a helper call wrapping it. The real
+    /// cost is found with a gas-limit search: the smallest gas limit on a call that performs the
+    /// deployment and succeeds. Mining is measured through an external call, which is metered.
     function test_reportLaunchAndMiningGas() public {
         bytes memory initCode = abi.encodePacked(
             type(PleaHook).creationCode, abi.encode(address(pm), address(plea), address(imd), address(stacker), OWNER)
@@ -43,10 +59,58 @@ contract LaunchTest is Fixture {
         uint256 mineGas = g - gasleft();
         assertEq(salt, launch.salt());
         assertEq(tries, launch.tries());
-        emit log_named_uint("PleaLaunch constructor gas (mining + hook deploy + init + seed)", launchGas);
-        emit log_named_uint("salt mining gas", mineGas);
-        emit log_named_uint("salt tries", tries);
-        emit log_named_uint("salt", salt);
+        uint256 perTry = mineGas / tries;
+        assertGt(perTry, 50, "a try is at least one keccak and a compare");
+        assertLt(perTry, 300, "a try is a fixed-memory keccak loop iteration");
+
+        // A fresh launch, deployed from a helper so the deployment is a single call whose gas limit
+        // the search can bound. The helper's address changes the mined salt, so its tries are reported too.
+        PLEA p2 = new PLEA(OWNER);
+        CabalGate g2 = new CabalGate(address(p2), address(imd), ORACLE_SIGNER);
+        PleaDistributor d2 = new PleaDistributor(address(p2), OWNER);
+        LaunchDeployer dep = new LaunchDeployer();
+        uint256 snap = vm.snapshotState();
+        uint256 g0 = gasleft();
+        PleaLaunch l2 = dep.deploy(address(p2), address(g2), address(d2), address(pm), address(imd), address(stacker));
+        uint256 naive = g0 - gasleft();
+        uint256 tries2 = l2.tries();
+        assertEq(uint160(l2.hook()) & 0x3fff, FLAGS);
+        uint256 lo = 500_000;
+        uint256 hi = 60_000_000;
+        while (hi - lo > 5_000) {
+            uint256 mid = (lo + hi) / 2;
+            vm.revertToState(snap);
+            try dep.deploy{gas: mid}(
+                address(p2), address(g2), address(d2), address(pm), address(imd), address(stacker)
+            ) returns (
+                PleaLaunch
+            ) {
+                hi = mid;
+            } catch {
+                lo = mid;
+            }
+        }
+        vm.revertToState(snap);
+        uint256 launchGas = hi;
+        uint256 miningShare = perTry * tries2;
+        assertGt(launchGas, miningShare, "the launch costs more than its mining alone");
+        assertGt(launchGas, 2_000_000, "hook deploy + pool init + seed + mint are millions of gas, not 24k");
+        assertLt(naive, 100_000, "the naive gasleft() reading is the metering artifact, not the cost");
+        emit log_named_uint(
+            "PleaLaunch deploy: min gas limit on the deploying call (mining + hook deploy + init + seed)", launchGas
+        );
+        emit log_named_uint("  of which salt mining (tries x per-try)", miningShare);
+        emit log_named_uint("  salt tries for this deployer", tries2);
+        emit log_named_uint("  non-mining share (hook deploy + init + mint + seed)", launchGas - miningShare);
+        emit log_named_uint("salt mining gas, fixture launch (external call)", mineGas);
+        emit log_named_uint("salt tries, fixture launch", tries);
+        emit log_named_uint("mining gas per try", perTry);
+        emit log_named_uint("worst-case mining gas (100,000 tries before SaltNotFound)", perTry * launch.MAX_TRIES());
+        emit log_named_uint(
+            "worst-case launch gas (non-mining share + 100,000 tries)",
+            launchGas - miningShare + perTry * launch.MAX_TRIES()
+        );
+        emit log_named_uint("naive gasleft() reading around the CREATE (artifact, not a cost)", naive);
     }
 
     function testFuzz_minedSaltHasExactFlagBits(address deployer, bytes32 initHash) public view {
