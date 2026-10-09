@@ -9,7 +9,7 @@ import {PLEA} from "../src/PLEA.sol";
 contract GateTest is Fixture {
     string constant TEXT = "Dear Cabal, I bought early and held through the dip; I need 10% for my sister's wedding.";
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
         skip(91 minutes);
         vm.roll(vm.getBlockNumber() + 450);

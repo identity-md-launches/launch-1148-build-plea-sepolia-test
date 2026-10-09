@@ -35,14 +35,12 @@ contract Fixture is Test {
     address bob = makeAddr("bob");
     address keeper = makeAddr("keeper");
 
-    uint256 launchGas;
-
     function setUp() public virtual {
         vm.chainId(11155111);
         vm.warp(1_800_000_000);
         vm.roll(1000);
         pm = new PoolManager(address(this));
-        imd = new MockIMD();
+        deployImd();
         simd = new MockSIMD();
         stacker = new MockStacker(imd, simd);
         deployLaunch();
@@ -65,15 +63,22 @@ contract Fixture is Test {
         gate.setSigner(SIGNER);
     }
 
+    /// @dev Default: IMD sorts below PLEA (IMD is currency0, `hook.pleaIsZero() == false`). The
+    /// orientation suite overrides this to put IMD at a high address so PLEA is currency0.
+    function deployImd() internal virtual {
+        imd = new MockIMD();
+    }
+
     function deployLaunch() internal {
         plea = new PLEA(OWNER);
         gate = new CabalGate(address(plea), address(imd), ORACLE_SIGNER);
         distributor = new PleaDistributor(address(plea), OWNER);
-        uint256 g = gasleft();
+        // Not metered here: in this forge build `gasleft()` around a CREATE reports only the call
+        // overhead (about 24k), not the constructor's execution. Launch.t.sol measures the real
+        // cost with a gas-limit search on a deploying call.
         launch = new PleaLaunch(
             address(plea), address(gate), address(distributor), address(pm), address(imd), address(stacker)
         );
-        launchGas = g - gasleft();
         hook = PleaHook(launch.hook());
     }
 
